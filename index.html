@@ -233,6 +233,7 @@
     </div>
     <button class="btn" onclick="startGame()">🔄 재시작</button>
     <button class="btn" onclick="togglePause()">⏸ 일시정지</button>
+    <button class="btn" id="music-btn" onclick="toggleMusic()">🔊 음악 끄기</button>
     <div class="panel" style="padding:10px;">
       <h3>모바일 조작</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:4px;">
@@ -285,6 +286,94 @@ let currentPiece, nextPiece;
 let dropInterval, lastTime = 0;
 let highScore = 0;
 
+/* ===================== 배경음악 (Web Audio 신스) =====================
+   코로베이니키(Korobeiniki) - 19세기 러시아 민요, 퍼블릭 도메인 멜로디를
+   오실레이터로 직접 합성하여 재생합니다. 레벨이 오를수록 템포가 빨라집니다. */
+let audioCtx = null;
+let musicGain = null;
+let musicTimer = null;
+let musicIdx = 0;
+let musicOn = true;
+
+// [음이름, 길이(16분음표 단위)]
+const MELODY = [
+  ['E5',2],['B4',1],['C5',1],['D5',2],['C5',1],['B4',1],
+  ['A4',2],['A4',1],['C5',1],['E5',2],['D5',1],['C5',1],
+  ['B4',2],['B4',1],['C5',1],['D5',2],['E5',2],
+  ['C5',2],['A4',2],['A4',2],
+  ['REST',2],
+  ['D5',3],['F5',1],['A5',2],['G5',1],['F5',1],
+  ['E5',3],['C5',1],['E5',2],['D5',1],['C5',1],
+  ['B4',2],['B4',1],['C5',1],['D5',2],['E5',2],
+  ['C5',2],['A4',2],['A4',2],
+  ['REST',3],
+];
+
+function noteToFreq(note) {
+  if (note === 'REST') return 0;
+  const map = {C:0,'C#':1,D:2,'D#':3,E:4,F:5,'F#':6,G:7,'G#':8,A:9,'A#':10,B:11};
+  const name = note.slice(0, -1);
+  const octave = parseInt(note.slice(-1), 10);
+  const semitone = map[name] + (octave - 4) * 12;
+  return 440 * Math.pow(2, semitone / 12);
+}
+
+function ensureAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    musicGain = audioCtx.createGain();
+    musicGain.gain.value = musicOn ? 0.12 : 0;
+    musicGain.connect(audioCtx.destination);
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playNote(freq, dur) {
+  if (!musicOn || freq === 0 || !audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  osc.type = 'square';
+  osc.frequency.value = freq;
+  const g = audioCtx.createGain();
+  const t0 = audioCtx.currentTime;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(1, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + Math.max(0.05, dur * 0.9));
+  osc.connect(g);
+  g.connect(musicGain);
+  osc.start(t0);
+  osc.stop(t0 + dur);
+}
+
+function scheduleNext() {
+  if (gameOver || paused) return;
+  const [note, units] = MELODY[musicIdx % MELODY.length];
+  // 빠른 템포: 레벨이 오를수록 더 빨라짐
+  const unit16 = Math.max(0.045, 0.095 - (level - 1) * 0.006);
+  const dur = unit16 * units;
+  playNote(noteToFreq(note), dur);
+  musicIdx++;
+  musicTimer = setTimeout(scheduleNext, dur * 1000);
+}
+
+function startMusic() {
+  ensureAudio();
+  clearTimeout(musicTimer);
+  musicIdx = 0;
+  scheduleNext();
+}
+
+function stopMusic() {
+  clearTimeout(musicTimer);
+}
+
+function toggleMusic() {
+  musicOn = !musicOn;
+  if (musicGain) musicGain.gain.value = musicOn ? 0.12 : 0;
+  document.getElementById('music-btn').textContent = musicOn ? '🔊 음악 끄기' : '🔇 음악 켜기';
+  if (musicOn && !gameOver && !paused && !musicTimer) scheduleNext();
+}
+/* ===================================================================== */
+
 function createBoard() {
   return Array.from({length: ROWS}, () => Array(COLS).fill(0));
 }
@@ -306,6 +395,7 @@ function startGame() {
   cancelAnimationFrame(animId);
   lastTime = 0;
   animId = requestAnimationFrame(gameLoop);
+  startMusic();
 }
 
 function getDropInterval() {
@@ -410,6 +500,7 @@ function clearLines() {
 function endGame() {
   gameOver = true;
   cancelAnimationFrame(animId);
+  stopMusic();
   if (score > highScore) highScore = score;
   saveScore(score);
   setTimeout(() => {
@@ -424,7 +515,13 @@ function endGame() {
 function togglePause() {
   if (gameOver) return;
   paused = !paused;
-  if (!paused) { lastTime = performance.now(); animId = requestAnimationFrame(gameLoop); }
+  if (!paused) {
+    lastTime = performance.now();
+    animId = requestAnimationFrame(gameLoop);
+    scheduleNext();
+  } else {
+    clearTimeout(musicTimer);
+  }
 }
 
 function updateUI() {
